@@ -117,6 +117,7 @@ func (c *RPCClient) startStream() {
 
 	// Send new pings every 3 seconds
 	timer := time.NewTicker(3 * time.Second)
+	defer timer.Stop()
 
 	// Watch for incoming messages in a background goroutine
 	go func() {
@@ -145,12 +146,15 @@ func (c *RPCClient) startStream() {
 			err := stream.Send(&pb.ChannelClientStream{
 				Pong: true,
 			})
+			if err == io.EOF {
+				c.logger.Println("Stream reached EOF")
+				return
+			}
 			if err != nil {
 				c.logger.Println("Error while sending message:", err)
 			}
 		// Context for canceling the operation
 		case <-ctx.Done():
-			timer.Stop()
 			c.logger.Println("Channel closed")
 			return
 		}
