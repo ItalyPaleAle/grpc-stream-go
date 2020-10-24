@@ -5,8 +5,11 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
+	gops "github.com/google/gops/agent"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/keepalive"
@@ -15,16 +18,43 @@ import (
 )
 
 func main() {
+	// Gops
+	if err := gops.Listen(gops.Options{}); err != nil {
+		log.Fatal(err)
+	}
+
 	// Start the client
 	client := &RPCClient{}
 	client.Init()
 	err := client.Connect()
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 
 	// Continue indefinitely
-	select {}
+	//select {}
+
+	// Listen to the USR1 signal
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh,
+		syscall.SIGUSR1,
+	)
+
+	for {
+		// Wait for the signal to disconnect
+		<-sigCh
+		err = client.Disconnect()
+		if err != nil {
+			panic(err)
+		}
+
+		// On the next USR1 signal, re-connect
+		<-sigCh
+		err = client.Connect()
+		if err != nil {
+			panic(err)
+		}
+	}
 }
 
 // Timeout for all requests, in seconds
