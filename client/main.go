@@ -70,15 +70,25 @@ func (c *RPCClient) Connect() (err error) {
 	c.client = pb.NewControllerClient(c.connection)
 
 	// Start the background stream in another goroutine
-	go c.startStream()
+	go func() {
+		// Continue re-connecting automatically if the connection drops
+		for c.connection != nil {
+			c.logger.Println("Connecting to the channel")
+			// Note that if the underlying connection is down, this call blocks until it comes back
+			c.startStream()
+			// Wait 1 second before trying to reconnect
+			time.Sleep(1 * time.Second)
+		}
+	}()
 
 	return nil
 }
 
 // Disconnect closes the connection with the gRPC server
 func (c *RPCClient) Disconnect() error {
-	err := c.connection.Close()
+	conn := c.connection
 	c.connection = nil
+	err := conn.Close()
 	return err
 }
 
@@ -93,14 +103,20 @@ func (c *RPCClient) Reconnect() error {
 
 // startStream starts the stream with the server
 func (c *RPCClient) startStream() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Connect to the stream RPC
-	stream, err := c.client.Channel(context.Background(), grpc.WaitForReady(true))
+	stream, err := c.client.Channel(ctx, grpc.WaitForReady(true))
 	if err != nil {
 		c.logger.Println("Error while connecting to the Channel stream:", err)
 		return
 	}
 	defer stream.CloseSend()
 	c.logger.Println("Channel connected")
+
+	// Send new pings every 3 seconds
+	timer := time.NewTicker(3 * time.Second)
 
 	// Watch for incoming messages in a background goroutine
 	go func() {
@@ -109,6 +125,7 @@ func (c *RPCClient) startStream() {
 			in, err := stream.Recv()
 			if err == io.EOF {
 				c.logger.Println("Stream reached EOF")
+				cancel()
 				break
 			}
 			if err != nil {
@@ -120,11 +137,22 @@ func (c *RPCClient) startStream() {
 		}
 	}()
 
-	// Send pongs every 3 seconds
-	timer := time.NewTicker(3 * time.Second)
-	for range timer.C {
-		stream.Send(&pb.ChannelClientStream{
-			Pong: true,
-		})
+	// Send pings at the interval
+	for {
+		select {
+		// Interval
+		case <-timer.C:
+			err := stream.Send(&pb.ChannelClientStream{
+				Pong: true,
+			})
+			if err != nil {
+				c.logger.Println("Error while sending message:", err)
+			}
+		// Context for canceling the operation
+		case <-ctx.Done():
+			timer.Stop()
+			c.logger.Println("Channel closed")
+			return
+		}
 	}
 }
