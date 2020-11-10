@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"log"
 	"os"
@@ -12,13 +13,14 @@ import (
 	gops "github.com/google/gops/agent"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 
 	pb "streamtest/service"
 )
 
 func main() {
-	// Gops
+	// Gops (for detecting goroutine leaks)
 	if err := gops.Listen(gops.Options{}); err != nil {
 		log.Fatal(err)
 	}
@@ -57,11 +59,31 @@ func main() {
 	}
 }
 
+// Auth token for RPC calls
+const authToken = "hello world"
+
 // Timeout for all requests, in seconds
 const requestTimeout = 15
 
 // Interval between keepalive requests, in seconds
 const keepaliveInterval = 600
+
+// RPCAuth is the object implementing credentials.PerRPCCredentials that provides the auth info
+type RPCAuth struct {
+	PSK string
+}
+
+// GetRequestMetadata returns the metadata containing the authorization key
+func (a *RPCAuth) GetRequestMetadata(ctx context.Context, in ...string) (map[string]string, error) {
+	return map[string]string{
+		"authorization": "Bearer " + a.PSK,
+	}, nil
+}
+
+// RequireTransportSecurity returns true because this kind of auth requires TLS
+func (a *RPCAuth) RequireTransportSecurity() bool {
+	return true
+}
 
 // RPCClient is the gRPC client for communicating with the cluster manager
 type RPCClient struct {
@@ -81,7 +103,14 @@ func (c *RPCClient) Connect() (err error) {
 	// Underlying connection
 	connOpts := []grpc.DialOption{
 		grpc.WithBlock(),
-		grpc.WithInsecure(),
+		grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
+			// Enable InsecureSkipVerify because our certificate is self-signed
+			// TODO: Remove this in production!
+			InsecureSkipVerify: true,
+		})),
+		grpc.WithPerRPCCredentials(&RPCAuth{
+			PSK: authToken,
+		}),
 		grpc.WithConnectParams(grpc.ConnectParams{
 			Backoff:           backoff.DefaultConfig,
 			MinConnectTimeout: time.Duration(requestTimeout) * time.Second,

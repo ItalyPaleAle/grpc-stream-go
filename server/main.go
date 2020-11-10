@@ -2,16 +2,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/metadata"
 
 	pb "streamtest/service"
 )
@@ -35,6 +39,9 @@ func main() {
 	fmt.Println("Received signal to terminate the app")
 	srv.Stop()
 }
+
+// Auth token for RPC calls
+const authToken = "hello world"
 
 // RPCServer manages the gRPC server
 type RPCServer struct {
@@ -67,8 +74,18 @@ func (s *RPCServer) Start() {
 		// Create the context
 		s.runningCtx, s.runningCancel = context.WithCancel(context.Background())
 
+		// TLS
+		creds, err := credentials.NewServerTLSFromFile("../cert.pem", "../key.pem")
+		if err != nil {
+			panic(err)
+		}
+
 		// Create the server
-		s.grpcServer = grpc.NewServer()
+		s.grpcServer = grpc.NewServer(
+			grpc.Creds(creds),
+			grpc.UnaryInterceptor(authUnaryInterceptor),
+			grpc.StreamInterceptor(authStreamInterceptor),
+		)
 		pb.RegisterControllerServer(s.grpcServer, s)
 
 		// Start the server in another channel
@@ -202,4 +219,49 @@ func (s *RPCServer) Channel(stream pb.Controller_ChannelServer) error {
 			})
 		}
 	}
+}
+
+// Interceptor for unary ("simple RPC") requests that checks the authorization metadata
+func authUnaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
+	// Check if the call is authorized
+	err = checkAuth(ctx)
+	if err != nil {
+		return
+	}
+
+	// Call is authorized, so continue the execution
+	return handler(ctx, req)
+}
+
+// Interceptor for stream requests that checks the authorization metadata
+func authStreamInterceptor(srv interface{}, srvStream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
+	// Check if the call is authorized
+	err = checkAuth(srvStream.Context())
+	if err != nil {
+		return
+	}
+
+	// Call is authorized, so continue the execution
+	return handler(srv, srvStream)
+}
+
+// Used by the interceptors, this checks the authorization metadata
+func checkAuth(ctx context.Context) error {
+	// Ensure we have an authorization metadata
+	// Note that the keys in the metadata object are always lowercased
+	m, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return errors.New("missing metadata")
+	}
+	if len(m["authorization"]) != 1 {
+		return errors.New("invalid authorization")
+	}
+
+	// Remove the optional "Bearer " prefix
+	if strings.TrimPrefix(m["authorization"][0], "Bearer ") != "hello world" {
+		return errors.New("invalid authorization")
+	}
+
+	// All good
+	return nil
 }
