@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"errors"
 	"io"
 	"log"
 	"os"
@@ -29,23 +28,6 @@ func main() {
 	// Init the client
 	client := &RPCClient{}
 	client.Init()
-
-	// In a background goroutine, watch for when the client is connected and repeat the check every 5 seconds
-	go func() {
-		ctx := context.Background()
-
-		for {
-			log.Println("Waiting for connection")
-			// This call blocks until a connection is established (if not already)
-			// Ignore errors here as we are passing a context with no timeout
-			_ = client.WaitForConnection(ctx)
-			log.Println("Connection established!")
-
-			time.Sleep(5 * time.Second)
-		}
-	}()
-
-	// Start the connection
 	err := client.Connect()
 	if err != nil {
 		log.Fatal(err)
@@ -107,8 +89,6 @@ func (a *RPCAuth) RequireTransportSecurity() bool {
 type RPCClient struct {
 	client     pb.ControllerClient
 	connection *grpc.ClientConn
-	connState  chan bool
-	connected  bool
 	logger     *log.Logger
 }
 
@@ -116,15 +96,10 @@ type RPCClient struct {
 func (c *RPCClient) Init() {
 	// Initialize the logger
 	c.logger = log.New(os.Stdout, "grpc: ", log.Ldate|log.Ltime|log.LUTC)
-
-	// Create a channel used to notify connection state changes
-	c.connState = make(chan bool)
 }
 
 // Connect starts the connection to the gRPC server and starts all background streams
 func (c *RPCClient) Connect() (err error) {
-	c.connected = false
-
 	// Underlying connection
 	connOpts := []grpc.DialOption{
 		grpc.WithBlock(),
@@ -155,14 +130,11 @@ func (c *RPCClient) Connect() (err error) {
 
 	// Start the background stream in another goroutine
 	go func() {
-		// Continue re-connecting automatically if the connection drops, for as long ast the underlying connection is active
+		// Continue re-connecting automatically if the connection drops
 		for c.connection != nil {
 			c.logger.Println("Connecting to the channel")
 			// Note that if the underlying connection is down, this call blocks until it comes back
 			c.startStream()
-			// Notify that the connection is down
-			c.connected = false
-			c.connState <- false
 			// Wait 1 second before trying to reconnect
 			time.Sleep(1 * time.Second)
 		}
@@ -188,30 +160,6 @@ func (c *RPCClient) Reconnect() error {
 	return c.Connect()
 }
 
-// WaitForConnection is a call that blocks until the client is successfully connected to the gRPC server
-// You can also pass a context to time out the function
-func (c *RPCClient) WaitForConnection(ctx context.Context) error {
-	for {
-		// If we're already connected, return immediately
-		if c.connected {
-			return nil
-		}
-
-		select {
-		// The connState channel contains notifications of when the connection is established or closed
-		case state := <-c.connState:
-			if state {
-				return nil
-			}
-			break
-
-		// If the context is canceled, then return an error
-		case <-ctx.Done():
-			return errors.New("context canceled")
-		}
-	}
-}
-
 // startStream starts the stream with the server
 func (c *RPCClient) startStream() {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -225,10 +173,6 @@ func (c *RPCClient) startStream() {
 	}
 	defer stream.CloseSend()
 	c.logger.Println("Channel connected")
-
-	// We have connected, so notify the channel
-	c.connected = true
-	c.connState <- true
 
 	// Send new pings every 3 seconds
 	timer := time.NewTicker(3 * time.Second)
