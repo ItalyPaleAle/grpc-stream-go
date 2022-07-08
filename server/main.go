@@ -36,7 +36,7 @@ func main() {
 
 	// Wait for the shutdown signal then stop the servers
 	<-sigCh
-	fmt.Println("Received signal to terminate the app")
+	log.Println("Received signal to terminate the app")
 	srv.Stop()
 }
 
@@ -85,8 +85,8 @@ func (s *RPCServer) Start() {
 		// Create the server
 		s.grpcServer = grpc.NewServer(
 			grpc.Creds(creds),
-			grpc.UnaryInterceptor(authUnaryInterceptor),
-			grpc.StreamInterceptor(authStreamInterceptor),
+			grpc.UnaryInterceptor(s.authUnaryInterceptor),
+			grpc.StreamInterceptor(s.authStreamInterceptor),
 		)
 		pb.RegisterControllerServer(s.grpcServer, s)
 
@@ -147,7 +147,7 @@ func (s *RPCServer) gracefulStop() {
 	// Cancel the context
 	s.runningCancel()
 
-	// Try gracefulling closing the gRPC server
+	// Try gracefully closing the gRPC server
 	closed := make(chan int)
 	go func() {
 		s.grpcServer.GracefulStop()
@@ -206,12 +206,12 @@ func (s *RPCServer) Channel(stream pb.Controller_ChannelServer) error {
 		select {
 		// Exit if context is done
 		case <-stream.Context().Done():
-			fmt.Println("stream.Context().Done()")
+			log.Println("stream.Context().Done()")
 			return nil
 
 		// The server is shutting down
 		case <-s.runningCtx.Done():
-			fmt.Println("runningCtx.Done()")
+			log.Println("runningCtx.Done()")
 			return nil
 
 		// Send a ping
@@ -224,7 +224,9 @@ func (s *RPCServer) Channel(stream pb.Controller_ChannelServer) error {
 }
 
 // Interceptor for unary ("simple RPC") requests that checks the authorization metadata
-func authUnaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
+func (s *RPCServer) authUnaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
+	s.logger.Println("authUnaryInterceptor invoked")
+
 	// Check if the call is authorized
 	err = checkAuth(ctx)
 	if err != nil {
@@ -236,7 +238,9 @@ func authUnaryInterceptor(ctx context.Context, req interface{}, info *grpc.Unary
 }
 
 // Interceptor for stream requests that checks the authorization metadata
-func authStreamInterceptor(srv interface{}, srvStream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
+func (s *RPCServer) authStreamInterceptor(srv interface{}, srvStream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) (err error) {
+	s.logger.Println("authStreamInterceptor invoked")
+
 	// Check if the call is authorized
 	err = checkAuth(srvStream.Context())
 	if err != nil {

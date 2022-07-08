@@ -133,7 +133,7 @@ func (c *RPCClient) Connect() (err error) {
 		// Continue re-connecting automatically if the connection drops
 		for c.connection != nil {
 			c.logger.Println("Connecting to the channel")
-			// Note that if the underlying connection is down, this call blocks until it comes back
+			// Note that if the underlying connection is down, this call blocks until it comes back up
 			c.startStream()
 			// Wait 1 second before trying to reconnect
 			time.Sleep(1 * time.Second)
