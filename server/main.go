@@ -45,6 +45,8 @@ const authToken = "hello world"
 
 // RPCServer manages the gRPC server
 type RPCServer struct {
+	pb.UnimplementedControllerServer
+
 	logger        *log.Logger
 	stopCh        chan int
 	restartCh     chan int
